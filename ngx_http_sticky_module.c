@@ -36,6 +36,7 @@ typedef struct {
 	ngx_http_sticky_misc_text_pt  text;
 	ngx_uint_t                    no_fallback;
 	ngx_http_sticky_peer_t       *peers;
+	ngx_int_t                     path_key;
 } ngx_http_sticky_srv_conf_t;
 
 
@@ -271,6 +272,8 @@ static ngx_int_t ngx_http_get_sticky_peer(ngx_peer_connection_t *pc, void *data)
 	uintptr_t                     m = 0;
 	ngx_uint_t                    n = 0, i;
 	ngx_http_upstream_rr_peer_t  *peer = NULL;
+	ngx_http_variable_value_t    *path_value;
+	ngx_str_t                     path = ngx_string("/");
 
 	ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] get sticky peer, try: %ui, n_peers: %ui, no_fallback: %ui/%ui", pc->tries, iphp->rrp.peers->number, conf->no_fallback, iphp->no_fallback);
 
@@ -370,8 +373,21 @@ static ngx_int_t ngx_http_get_sticky_peer(ngx_peer_connection_t *pc, void *data)
 
 			if (iphp->rrp.peers->peer[i].sockaddr == pc->sockaddr && iphp->rrp.peers->peer[i].socklen == pc->socklen) {
 				if (conf->hash || conf->hmac || conf->text) {
-					ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &conf->peers[i].digest, &conf->cookie_domain, &conf->cookie_path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
-					ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" index=%ui", &conf->cookie_name, &conf->peers[i].digest, i);
+					if (conf->cookie_path.data[0] == '$') {
+						path_value = ngx_http_get_indexed_variable(iphp->request, conf->path_key);
+						if (path_value == NULL || path_value->not_found) {
+							ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &conf->peers[i].digest, &conf->cookie_domain, &conf->cookie_path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
+							ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" path=\"%V\" index=%ui", &conf->cookie_name, &conf->peers[i].digest, &conf->cookie_path, i);
+						} else {
+							path.data = (u_char *)path_value->data;
+							path.len = ngx_strlen(path_value->data);
+							ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &conf->peers[i].digest, &conf->cookie_domain, &path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
+							ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" path=\"%V\" index=%ui", &conf->cookie_name, &conf->peers[i].digest, &path, i);
+						}
+					} else {
+						ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &conf->peers[i].digest, &conf->cookie_domain, &conf->cookie_path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
+						ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" path=\"%V\" index=%ui", &conf->cookie_name, &conf->peers[i].digest, &conf->cookie_path, i);
+					}
 				} else {
 					ngx_str_t route;
 					ngx_uint_t tmp = i;
@@ -385,8 +401,21 @@ static ngx_int_t ngx_http_get_sticky_peer(ngx_peer_connection_t *pc, void *data)
 					}
 					ngx_snprintf(route.data, route.len, "%d", i);
 					route.len = ngx_strlen(route.data);
-					ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &route, &conf->cookie_domain, &conf->cookie_path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
-					ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" index=%ui", &conf->cookie_name, &tmp, i);
+					if (conf->cookie_path.data[0] == '$') {
+						path_value = ngx_http_get_indexed_variable(iphp->request, conf->path_key);
+						if (path_value == NULL || path_value->not_found) {
+							ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &route, &conf->cookie_domain, &conf->cookie_path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
+							ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" path=\"%V\" index=%ui", &conf->cookie_name, &tmp, &conf->cookie_path, i);
+						} else {
+							path.data = (u_char *)path_value->data;
+							path.len = ngx_strlen(path_value->data);
+							ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &route, &conf->cookie_domain, &path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
+							ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" path=\"%V\" index=%ui", &conf->cookie_name, &tmp, &path, i);
+						}
+					} else {
+						ngx_http_sticky_misc_set_cookie(iphp->request, &conf->cookie_name, &route, &conf->cookie_domain, &conf->cookie_path, conf->cookie_expires, conf->cookie_secure, conf->cookie_httponly);
+						ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "[sticky/get_sticky_peer] set cookie \"%V\" value=\"%V\" path=\"%V\" index=%ui", &conf->cookie_name, &tmp, &conf->cookie_path, i);
+					}
 				}
 				break; /* found and hopefully the cookie have been set */
 			}
@@ -419,6 +448,7 @@ static char *ngx_http_sticky_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	ngx_http_sticky_misc_hmac_pt hmac = NULL;
 	ngx_http_sticky_misc_text_pt text = NULL;
 	ngx_uint_t no_fallback = 0;
+	ngx_int_t path_key = 0;
 
 	/* parse all elements */
 	for (i = 1; i < cf->args->nelts; i++) {
@@ -466,6 +496,12 @@ static char *ngx_http_sticky_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 			/* save what's after "domain=" */
 			path.len = value[i].len - ngx_strlen("path=");
 			path.data = (u_char *)(value[i].data + sizeof("path=") - 1);
+			if (path.data[0] == '$') {
+			    ngx_str_t path_value = ngx_string("/");
+			    path_value.len = path.len - 1;
+			    path_value.data = (u_char *)(path.data + sizeof("$") - 1);
+			    path_key = ngx_http_get_variable_index(cf, &path_value);
+			}
 			continue;
 		}
 
@@ -678,6 +714,7 @@ static char *ngx_http_sticky_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	sticky_conf->hmac_key = hmac_key;
 	sticky_conf->no_fallback = no_fallback;
 	sticky_conf->peers = NULL; /* ensure it's null before running */
+	sticky_conf->path_key = path_key;
 
 	upstream_conf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_module);
 
